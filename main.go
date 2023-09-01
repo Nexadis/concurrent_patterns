@@ -41,7 +41,7 @@ func FanIn(sources ...<-chan int) <-chan int {
 func main() {
 	channels := 5
 	dataLen := 3
-	sleepTime := 500 * time.Millisecond
+	sleepTime := 2000 * time.Millisecond
 	sources := make([]<-chan int, 0, channels)
 
 	for i := 0; i < channels; i++ {
