@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -56,6 +57,50 @@ func FanOut(source <-chan int, n int) []<-chan int {
 	return destinations
 }
 
+type Future interface {
+	Result() (int, error)
+}
+
+type InnerFuture struct {
+	once sync.Once
+	wg   sync.WaitGroup
+
+	res   int
+	err   error
+	resCh <-chan int
+	errCh <-chan error
+}
+
+func (f *InnerFuture) Result() (int, error) {
+	f.once.Do(func() {
+		f.wg.Add(1)
+		defer f.wg.Done()
+		f.res = <-f.resCh
+		f.err = <-f.errCh
+	})
+	f.wg.Wait()
+
+	return f.res, f.err
+}
+
+func SlowFunction(ctx context.Context) Future {
+	resCh := make(chan int)
+	errCh := make(chan error)
+
+	go func() {
+		fmt.Println("Wait for future")
+		select {
+		case <-time.After(time.Second * 1):
+			resCh <- 1337
+			errCh <- nil
+		case <-ctx.Done():
+			resCh <- 0
+			errCh <- ctx.Err()
+		}
+	}()
+	return &InnerFuture{resCh: resCh, errCh: errCh}
+}
+
 func main() {
 	channels := 5
 	dataLen := 3
@@ -106,6 +151,24 @@ func main() {
 		}(i, ch)
 	}
 	wg.Wait()
+
+	border("[ Future ]")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*1500)
+	defer cancel()
+
+	future := SlowFunction(ctx)
+	res, err := future.Result()
+	if err != nil {
+		fmt.Println("error:", err)
+	} else {
+		fmt.Println(res)
+	}
+	res, err = future.Result()
+	if err != nil {
+		fmt.Println("error:", err)
+	} else {
+		fmt.Println(res)
+	}
 }
 
 func border(msg string) {
