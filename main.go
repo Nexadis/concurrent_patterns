@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
 	"fmt"
 	"sync"
 	"time"
@@ -101,6 +102,74 @@ func SlowFunction(ctx context.Context) Future {
 	return &InnerFuture{resCh: resCh, errCh: errCh}
 }
 
+type Shard struct {
+	sync.RWMutex
+	m map[string]interface{}
+}
+
+type ShardedMap []*Shard
+
+func NewShardedMap(nshards int) ShardedMap {
+	shards := make([]*Shard, nshards)
+	for i := 0; i < nshards; i++ {
+		shard := make(map[string]interface{})
+		shards[i] = &Shard{m: shard}
+	}
+	return shards
+}
+
+func (m ShardedMap) getShardIndex(key string) int {
+	checksum := sha1.Sum([]byte(key)) // медленный алгоритм для хеширования
+	hash := int(checksum[0])          // берём произвольный байт для хеша
+	return hash % len(m)
+}
+
+func (m ShardedMap) getShard(key string) *Shard {
+	index := m.getShardIndex(key)
+	return m[index]
+}
+
+func (m ShardedMap) Get(key string) (interface{}, bool) {
+	shard := m.getShard(key)
+	shard.RLock()
+	defer shard.RUnlock()
+	val, ok := shard.m[key]
+
+	return val, ok
+}
+
+func (m ShardedMap) Set(key string, value interface{}) {
+	shard := m.getShard(key)
+	shard.Lock()
+	defer shard.Unlock()
+
+	shard.m[key] = value
+}
+
+func (m ShardedMap) Keys() []string {
+	keys := make([]string, 0, len(m)) // предвыделяем память, точное количество ключей неизвестно, но попробуем минимизировать начальные расходы
+
+	mutex := sync.Mutex{}
+	wg := sync.WaitGroup{}
+	wg.Add(len(m))
+	for _, shard := range m {
+		go func(s *Shard) {
+			s.RLock()
+			for key := range s.m {
+				mutex.Lock()
+				keys = append(keys, key)
+				mutex.Unlock()
+			}
+
+			s.RUnlock()
+			wg.Done()
+		}(shard)
+	}
+	wg.Wait()
+
+	return keys
+}
+
 func main() {
 	channels := 5
 	dataLen := 3
@@ -168,6 +237,17 @@ func main() {
 		fmt.Println("error:", err)
 	} else {
 		fmt.Println(res)
+	}
+	border("[ Sharding ]")
+	shardedMap := NewShardedMap(3)
+	for i := 0; i < 9; i++ {
+		word := fmt.Sprintf("%c", 'a'+i)
+		shardedMap.Set(word, i)
+	}
+	keys := shardedMap.Keys()
+
+	for _, k := range keys {
+		fmt.Println(k)
 	}
 }
 
